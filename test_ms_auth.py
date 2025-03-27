@@ -5,10 +5,10 @@ import sys
 
 # Configuration values
 config = {
-    "MS_CLIENT_ID": "5c2a645c-e2d2-4ca8-8f0a-2485cf15bc04",
-    "MS_CLIENT_SECRET": "eRd8Q~BzzzKulhbm5tXBdlohz0P5wEUt1AjwVcJM",
-    "MS_TENANT_ID": "d425b028-1b6f-48d9-a62e-710f62343fd1",
-    "MS_USER_EMAIL": "ontimeapp@dataserve.com.sa",
+    "MS_CLIENT_ID": "NO",
+    "MS_CLIENT_SECRET": "NO",
+    "MS_TENANT_ID": "NO",
+    "MS_USER_EMAIL": "test356@dataserve.com.sa",
     "AUTO_INITIALIZE": True
 }
 

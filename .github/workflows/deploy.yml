@@ -1,120 +1,120 @@
-# .github/workflows/deploy.yml
-name: Deploy PDF Agent
+# # .github/workflows/deploy.yml
+# name: Deploy PDF Agent
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+# on:
+#   push:
+#     branches: [ main ]
+#   pull_request:
+#     branches: [ main ]
+#   workflow_dispatch:
 
-jobs:
-  terraform:
-    name: 'Terraform Infrastructure'
-    runs-on: ubuntu-latest
+# jobs:
+#   terraform:
+#     name: 'Terraform Infrastructure'
+#     runs-on: ubuntu-latest
     
-    # Use the Bash shell regardless whether the GitHub Actions runner is ubuntu-latest, macos-latest, or windows-latest
-    defaults:
-      run:
-        shell: bash
+#     # Use the Bash shell regardless whether the GitHub Actions runner is ubuntu-latest, macos-latest, or windows-latest
+#     defaults:
+#       run:
+#         shell: bash
     
-    steps:
-    # Checkout the repository to the GitHub Actions runner
-    - name: Checkout
-      uses: actions/checkout@v3
+#     steps:
+#     # Checkout the repository to the GitHub Actions runner
+#     - name: Checkout
+#       uses: actions/checkout@v3
     
-    # Install the latest version of Terraform
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: 1.0.0
+#     # Install the latest version of Terraform
+#     - name: Setup Terraform
+#       uses: hashicorp/setup-terraform@v2
+#       with:
+#         terraform_version: 1.0.0
     
-    # Initialize Terraform
-    - name: Terraform Init
-      run: terraform init
-      working-directory: ./terraform
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#     # Initialize Terraform
+#     - name: Terraform Init
+#       run: terraform init
+#       working-directory: ./terraform
+#       env:
+#         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     
-    # Validate the Terraform configuration
-    - name: Terraform Format
-      run: terraform fmt -check
-      working-directory: ./terraform
+#     # Validate the Terraform configuration
+#     - name: Terraform Format
+#       run: terraform fmt -check
+#       working-directory: ./terraform
     
-    # Generate Terraform plan
-    - name: Terraform Plan
-      if: github.event_name == 'pull_request'
-      run: terraform plan -no-color
-      working-directory: ./terraform
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#     # Generate Terraform plan
+#     - name: Terraform Plan
+#       if: github.event_name == 'pull_request'
+#       run: terraform plan -no-color
+#       working-directory: ./terraform
+#       env:
+#         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     
-    # Apply Terraform configuration when pushing to main branch
-    - name: Terraform Apply
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      run: terraform apply -auto-approve
-      working-directory: ./terraform
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#     # Apply Terraform configuration when pushing to main branch
+#     - name: Terraform Apply
+#       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+#       run: terraform apply -auto-approve
+#       working-directory: ./terraform
+#       env:
+#         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-  build_and_deploy:
-    name: 'Build and Deploy Application'
-    needs: terraform
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+#   build_and_deploy:
+#     name: 'Build and Deploy Application'
+#     needs: terraform
+#     runs-on: ubuntu-latest
+#     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     
-    steps:
-    # Checkout the repository
-    - name: Checkout
-      uses: actions/checkout@v3
+#     steps:
+#     # Checkout the repository
+#     - name: Checkout
+#       uses: actions/checkout@v3
     
-    # Setup Python
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
+#     # Setup Python
+#     - name: Setup Python
+#       uses: actions/setup-python@v4
+#       with:
+#         python-version: '3.9'
     
-    # Install dependencies
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+#     # Install dependencies
+#     - name: Install dependencies
+#       run: |
+#         python -m pip install --upgrade pip
+#         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
     
-    # Run tests
-    - name: Test with pytest
-      run: |
-        if [ -f pytest.ini ]; then
-          pip install pytest pytest-cov
-          pytest
-        else
-          echo "No tests to run"
-        fi
+#     # Run tests
+#     - name: Test with pytest
+#       run: |
+#         if [ -f pytest.ini ]; then
+#           pip install pytest pytest-cov
+#           pytest
+#         else
+#           echo "No tests to run"
+#         fi
     
-    # Package the application
-    - name: Package application
-      run: |
-        mkdir -p deployment
-        cp -r *.py deployment/
-        cp requirements.txt deployment/
+#     # Package the application
+#     - name: Package application
+#       run: |
+#         mkdir -p deployment
+#         cp -r *.py deployment/
+#         cp requirements.txt deployment/
         
-    # If you're deploying to AWS Lambda, you might want to create a zip
-    - name: Create deployment package
-      run: |
-        cd deployment
-        zip -r ../deployment.zip .
-        cd ..
+#     # If you're deploying to AWS Lambda, you might want to create a zip
+#     - name: Create deployment package
+#       run: |
+#         cd deployment
+#         zip -r ../deployment.zip .
+#         cd ..
     
-    # Upload the deployment package to S3
-    - name: Upload to S3
-      uses: jakejarvis/s3-sync-action@master
-      with:
-        args: --acl private --follow-symlinks
-      env:
-        AWS_S3_BUCKET: ${{ secrets.S3_BUCKET_NAME }}
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        SOURCE_DIR: 'deployment'
-        DEST_DIR: 'app'
+#     # Upload the deployment package to S3
+#     - name: Upload to S3
+#       uses: jakejarvis/s3-sync-action@master
+#       with:
+#         args: --acl private --follow-symlinks
+#       env:
+#         AWS_S3_BUCKET: ${{ secrets.S3_BUCKET_NAME }}
+#         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#         SOURCE_DIR: 'deployment'
+#         DEST_DIR: 'app'
