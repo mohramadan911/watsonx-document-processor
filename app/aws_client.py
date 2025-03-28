@@ -71,6 +71,23 @@ class AWSS3Client:
             logger.error(f"Error listing buckets: {str(e)}")
             return []
     
+    def list_pdfs(self, bucket_name, prefix="", max_keys=100):
+        """List all PDF files in a bucket
+        
+        Args:
+            bucket_name (str): Name of the S3 bucket
+            prefix (str, optional): Prefix to filter objects. Defaults to "".
+            max_keys (int, optional): Maximum number of keys to return. Defaults to 100.
+            
+        Returns:
+            list: List of PDF filenames
+        """
+        objects = self.list_objects(bucket_name, prefix, max_keys)
+        # Extract just the filenames from the objects
+        pdf_names = [obj['name'] for obj in objects]
+        logger.info(f"Found {len(pdf_names)} PDF files in bucket {bucket_name}")
+        return pdf_names
+    
     def list_objects(self, bucket_name, prefix="", max_keys=100):
         """List objects in a bucket with optional prefix
         

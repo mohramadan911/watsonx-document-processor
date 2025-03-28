@@ -1,59 +1,77 @@
 # custom_pdf_tool.py
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
-from langchain_core.embeddings import Embeddings
-import hashlib
-import numpy as np
+import logging
+import os
+import tempfile
+import shutil
 
-class WatsonxEmbeddings(Embeddings):
-    """Wrapper for WatsonX embedding model"""
-    def __init__(self, watsonx_model):
-        self.watsonx_model = watsonx_model
-    
-    def embed_documents(self, texts):
-        """Embed search docs."""
-        embeddings = []
-        for text in texts:
-            # Create deterministic dummy embeddings based on text hash
-            # Ensure the seed is within valid range (0 to 2^32 - 1)
-            hash_obj = hashlib.md5(text.encode())
-            # Take just the first 4 bytes of the hash and convert to int
-            seed = int.from_bytes(hash_obj.digest()[:4], byteorder='big')
-            np.random.seed(seed)
-            embeddings.append(np.random.rand(768))
-        return embeddings
-
-    def embed_query(self, text):
-        """Embed query text."""
-        return self.embed_documents([text])[0]
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class CustomPDFSearchTool:
-    """Simple tool for searching PDF documents using WatsonX"""
+    """Custom PDF search tool wrapping DocklingPDFTool"""
     
-    def __init__(self, pdf, watsonx_model):
-        self.pdf_path = pdf
+    def __init__(self, pdf_path, watsonx_model):
+        """Initialize the PDF search tool
+        
+        Args:
+            pdf_path (str): Path to the PDF file
+            watsonx_model: WatsonX model instance for enhanced processing
+        """
+        # Make sure we have an absolute path
+        if not os.path.isabs(pdf_path):
+            pdf_path = os.path.abspath(pdf_path)
+        
+        # Log path information for debugging
+        logger.info(f"CustomPDFSearchTool initializing with original path: {pdf_path}")
+        
+        # Verify the file exists
+        if not os.path.exists(pdf_path):
+            error_msg = f"PDF file not found at: {pdf_path}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
+            
+        # Store the original path
+        self.original_pdf_path = pdf_path
         self.watsonx_model = watsonx_model
         
-        # Load and process the PDF
-        self.loader = PyPDFLoader(self.pdf_path)
-        self.documents = self.loader.load()
+        # Import DocklingPDFTool here to avoid circular imports
+        try:
+            from dockling_tool import DocklingPDFTool
+            logger.info("Successfully imported DocklingPDFTool")
+        except ImportError as e:
+            logger.error(f"Failed to import DocklingPDFTool: {str(e)}")
+            raise
         
-        # Create embeddings
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        self.splits = text_splitter.split_documents(self.documents)
-        
-        # Initialize embeddings with WatsonX
-        embeddings = WatsonxEmbeddings(watsonx_model)
-        
-        # Create vector store
-        self.vector_store = FAISS.from_documents(self.splits, embeddings)
+        # Create the Dockling PDF tool with the original path
+        try:
+            self.dockling_tool = DocklingPDFTool(pdf_path=pdf_path, watsonx_model=watsonx_model)
+            logger.info(f"Successfully initialized DocklingPDFTool for {os.path.basename(pdf_path)}")
+            
+            # Save the path that DocklingPDFTool is using
+            self.pdf_path = self.dockling_tool.pdf_path
+            logger.info(f"Using Dockling path: {self.pdf_path}")
+        except Exception as e:
+            logger.error(f"Error initializing DocklingPDFTool: {str(e)}")
+            raise
     
     def search(self, query):
-        """Search the PDF for relevant information"""
-        # Search for similar documents
-        docs = self.vector_store.similarity_search(query, k=4)
+        """Search the PDF document content
         
-        # Extract and return the text from the similar documents
-        results = "\n\n".join([doc.page_content for doc in docs])
-        return results
+        Args:
+            query (str): The search query
+            
+        Returns:
+            str: Relevant content from the PDF
+        """
+        logger.info(f"Searching for query: {query}")
+        result = self.dockling_tool.search(query)
+        return result
+    
+    def get_metadata(self):
+        """Get document metadata
+        
+        Returns:
+            dict: Document metadata
+        """
+        return self.dockling_tool.get_metadata()
