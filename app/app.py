@@ -8,7 +8,8 @@ import logging
 from datetime import datetime
 import dotenv
 from document_classifier import DocumentClassifier, DocumentCategory
-
+from document_flow import DocumentProcessingFlow, integrate_document_flow
+from monitors import DocumentMonitor, setup_document_monitoring, trigger_scan_now, WorkflowScheduler
 # Load environment variables from .env file
 dotenv.load_dotenv()
 
@@ -135,7 +136,308 @@ def classify_and_organize_document(pdf_path, bucket_name=None, original_key=None
     except Exception as e:
         logger.error(f"Error in classify_and_organize_document: {str(e)}")
         return {"success": False, "error": str(e)}
+# Add this to your app.py file, in the main function
+# This adds autonomous agent features to your existing UI
+
+def add_autonomous_features(tab1, tab2):
+    """Add autonomous agent features to the Streamlit UI"""
+    import streamlit as st
+    from document_flow import DocumentProcessingFlow, integrate_document_flow
     
+    # Now using the tabs passed as parameters instead of trying to access local variables
+    with tab2:
+        st.subheader("Autonomous Agent Configuration")
+        
+        if 'document_flow' not in st.session_state:
+            # Make sure pdf_agent is properly initialized with a model
+            if ('pdf_agent' in st.session_state and 
+                st.session_state.pdf_agent is not None and 
+                hasattr(st.session_state.pdf_agent, 'model') and
+                st.session_state.pdf_agent.model is not None):
+                
+                if st.button("Initialize Autonomous Agents"):
+                    integrate_document_flow()
+            else:
+                st.warning("Please initialize WatsonX model first before setting up autonomous agents")
+        
+        # Autonomous processing settings
+        if 'document_flow' in st.session_state:
+            st.write("### Autonomous Processing Settings")
+            
+            # Monitoring settings
+            st.write("#### Document Monitoring")
+            
+            # Select buckets to monitor
+            if 'aws_buckets' in st.session_state and st.session_state.aws_buckets:
+                monitored_buckets = st.multiselect(
+                    "Select S3 buckets to monitor",
+                    options=st.session_state.aws_buckets,
+                    default=[]
+                )
+                
+                if st.button("Save Monitoring Settings"):
+                    st.session_state.monitored_buckets = monitored_buckets
+                    st.success(f"Now monitoring {len(monitored_buckets)} buckets")
+            
+            # Notification settings
+            st.write("#### Notification Settings")
+            
+            default_recipients = ""
+            if 'notification_recipients' in st.session_state:
+                default_recipients = st.session_state.notification_recipients
+            
+            notification_recipients = st.text_area(
+                "Default notification recipients (one email per line)",
+                value=default_recipients
+            )
+            
+            if st.button("Save Notification Settings"):
+                st.session_state.notification_recipients = notification_recipients
+                st.success("Notification settings saved")
+            
+            # Workflow settings
+            st.write("#### Workflow Settings")
+            
+            auto_classify = st.checkbox(
+                "Automatically classify and organize documents",
+                value=st.session_state.get('auto_classify', True)
+            )
+            
+            auto_summarize = st.checkbox(
+                "Automatically generate summaries for new documents",
+                value=st.session_state.get('auto_summarize', True)
+            )
+            
+            auto_notify = st.checkbox(
+                "Send notifications when critical documents are detected",
+                value=st.session_state.get('auto_notify', False)
+            )
+            
+            if st.button("Save Workflow Settings"):
+                st.session_state.auto_classify = auto_classify
+                st.session_state.auto_summarize = auto_summarize
+                st.session_state.auto_notify = auto_notify
+                st.success("Workflow settings saved")
+
+    # Add to Chat tab - Autonomous processing stats and controls
+    with tab1:
+        # Only display if agent is initialized
+        if 'document_flow' in st.session_state:
+            with st.expander("📊 Autonomous Agent Status"):
+                # Display monitored buckets
+                if 'monitored_buckets' in st.session_state and st.session_state.monitored_buckets:
+                    st.write(f"**Monitoring {len(st.session_state.monitored_buckets)} S3 buckets:**")
+                    for bucket in st.session_state.monitored_buckets:
+                        st.write(f"- {bucket}")
+                else:
+                    st.write("No buckets currently monitored")
+                
+                # Display processed document count (mock data - would track real stats)
+                processed_count = st.session_state.get('processed_document_count', 0)
+                st.write(f"**Processed documents:** {processed_count}")
+                
+                # Display active workflows (mock data - would track real workflows)
+                active_workflows = st.session_state.get('active_workflows', [])
+                if active_workflows:
+                    st.write("**Active workflows:**")
+                    for workflow in active_workflows:
+                        st.write(f"- {workflow}")
+                else:
+                    st.write("No active workflows")
+                
+                # Controls
+                if st.button("Pause Autonomous Processing"):
+                    st.session_state.autonomous_processing_paused = True
+                    st.success("Autonomous processing paused")
+                
+                if st.button("Resume Autonomous Processing"):
+                    st.session_state.autonomous_processing_paused = False
+                    st.success("Autonomous processing resumed")
+                
+                
+                # Replace the "Scan Now" button in add_autonomous_features with this implementation
+                if st.button("Scan Now"):
+                    with st.spinner("Scanning buckets for documents..."):
+                        try:
+                            # Get monitored buckets
+                            if 'monitored_buckets' in st.session_state and st.session_state.monitored_buckets:
+                                total_processed = 0
+                                
+                                for bucket_name in st.session_state.monitored_buckets:
+                                    st.info(f"Scanning bucket: {bucket_name}")
+                                    
+                                    # 1. List PDF files in the bucket (at root level)
+                                    if 'aws_s3_client' in st.session_state and st.session_state.aws_s3_client:
+                                        # List only PDF files at the root level
+                                        pdf_files = st.session_state.aws_s3_client.list_pdf_files(bucket_name)
+                                        
+                                        if pdf_files:
+                                            st.info(f"Found {len(pdf_files)} PDF files in bucket {bucket_name}")
+                                            
+                                            # 2. Process each PDF file
+                                            for pdf_file in pdf_files:
+                                                object_key = pdf_file.get('path', pdf_file['name'])
+                                                st.write(f"Processing: {object_key}")
+                                                
+                                                # Skip files that are already in category folders
+                                                if '/' in object_key:
+                                                    st.write(f"Skipping {object_key} - already in a folder")
+                                                    continue
+                                                
+                                                # Process the file
+                                                if 'document_flow' in st.session_state:
+                                                    result = st.session_state.document_flow.process_new_document(
+                                                        bucket_name, object_key
+                                                    )
+                                                    
+                                                    if result.get("success", False):
+                                                        total_processed += 1
+                                                        st.success(f"Processed: {object_key}")
+                                                    else:
+                                                        st.error(f"Failed to process {object_key}: {result.get('error', 'Unknown error')}")
+                                        else:
+                                            st.write(f"No PDF files found in bucket {bucket_name}")
+                                
+                                # Update the processed count in session state
+                                current_count = st.session_state.get('processed_document_count', 0)
+                                st.session_state.processed_document_count = current_count + total_processed
+                                
+                                if total_processed > 0:
+                                    st.success(f"Scan complete! Processed {total_processed} new documents")
+                                else:
+                                    st.info("Scan complete. No new documents to process.")
+                            else:
+                                st.warning("No buckets configured for monitoring. Please select buckets to monitor in the Configuration tab.")
+                        except Exception as e:
+                            st.error(f"Error during scan: {str(e)}")
+                            import traceback
+                            st.code(traceback.format_exc())
+                
+                if st.button("Debug: Process First Document"):
+                    with st.spinner("Processing first document directly..."):
+                        try:
+                            # Get document list
+                            if 'aws_s3_client' in st.session_state and 'monitored_buckets' in st.session_state:
+                                bucket_name = st.session_state.monitored_buckets[0]
+                                s3_items = st.session_state.aws_s3_client.list_pdfs(bucket_name)
+                                
+                                if s3_items and len(s3_items) > 0:
+                                    # Get first PDF
+                                    pdf_items = [item for item in s3_items if item.get('name', '').lower().endswith('.pdf')]
+                                    
+                                    if pdf_items:
+                                        pdf_item = pdf_items[0]
+                                        st.info(f"Found PDF: {pdf_item['name']}")
+                                        
+                                        # Get the full path/key
+                                        object_key = pdf_item.get('path', pdf_item.get('name', ''))
+                                        
+                                        # Try to process it directly
+                                        if 'document_flow' in st.session_state:
+                                            # Log the document being processed
+                                            logger.info(f"Debug: Processing document {object_key} from bucket {bucket_name}")
+                                            
+                                            result = st.session_state.document_flow.process_new_document(
+                                                bucket_name, 
+                                                object_key
+                                            )
+                                            
+                                            # Show result
+                                            st.write("Processing result:")
+                                            st.json(result)
+                                            
+                                            # Update counter if successful
+                                            if result.get("success", False):
+                                                processed_count = st.session_state.get('processed_document_count', 0)
+                                                st.session_state.processed_document_count = processed_count + 1
+                                                st.success("Document processed successfully!")
+                                        else:
+                                            st.error("Document flow not initialized")
+                                    else:
+                                        st.error("No PDF files found in bucket")
+                                else:
+                                    st.error("No items found in bucket")
+                            else:
+                                st.error("AWS client or monitored buckets not configured")
+                        except Exception as e:
+                            st.error(f"Error during direct processing: {str(e)}")
+                            import traceback
+                            st.code(traceback.format_exc())
+
+# Add to the document info section in Chat tab
+def add_autonomous_actions(file_name):
+    """Add autonomous agent action suggestions to document display"""
+    import streamlit as st
+    
+    # Create a suggestions section for autonomous actions
+    with st.expander("🤖 Agent Suggestions"):
+        st.write("**Based on this document, I suggest:**")
+        
+        # These would be generated by your autonomous agent
+        # For now, let's show some mock suggestions based on common document needs
+        suggestions = [
+            "📋 Classify as Financial document and move to Finance folder",
+            "📧 Share with Financial team",
+            "⏰ Set review reminder for quarterly compliance check (3 months)",
+            "📝 Generate executive summary for management review"
+        ]
+        
+        # Display suggestions with action buttons
+        for i, suggestion in enumerate(suggestions):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(f"{suggestion}")
+            with col2:
+                if st.button(f"Do it", key=f"suggestion_{i}"):
+                    st.success(f"Executing: {suggestion}")
+                    # This would trigger the actual action in your agent system
+    
+    # Add a section for autonomous classification
+    st.write("**Document Classification:**")
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        if st.button("Auto-Classify", use_container_width=True):
+            with st.spinner("Agent classifying document..."):
+                # This would call your agent's classification method
+                # For now let's simulate a result
+                st.session_state.classification_result = {
+                    "category": "FINANCIAL",
+                    "confidence": 0.92,
+                    "reasoning": "Document contains balance sheets, income statements, and financial analysis."
+                }
+                st.success("Document auto-classified as FINANCIAL")
+    
+    with col2:
+        if st.button("Suggest Recipients", use_container_width=True):
+            with st.spinner("Finding relevant recipients..."):
+                # This would analyze the document and suggest relevant people
+                # For now let's simulate suggestions
+                st.session_state.suggested_recipients = [
+                    "finance-team@company.com",
+                    "cfo@company.com",
+                    "compliance@company.com"
+                ]
+                st.success("Recipients suggested based on content")
+    
+    with col3:
+        if st.button("Auto-Workflow", use_container_width=True):
+            with st.spinner("Determining optimal workflow..."):
+                # This would determine the best workflow for this document
+                # For now let's simulate a workflow
+                st.session_state.suggested_workflow = "Financial Review and Approval"
+                st.success("Workflow determined: Financial Review and Approval")
+    
+    # Display any results from the autonomous actions
+    if 'classification_result' in st.session_state:
+        st.info(f"Classification: {st.session_state.classification_result['category']} (Confidence: {st.session_state.classification_result['confidence']:.2f})")
+    
+    if 'suggested_recipients' in st.session_state:
+        st.info(f"Suggested recipients: {', '.join(st.session_state.suggested_recipients)}")
+    
+    if 'suggested_workflow' in st.session_state:
+        st.info(f"Suggested workflow: {st.session_state.suggested_workflow}")
+
 def main():
     st.title('WatsonX PDF Agent 🤖')
     st.caption("🚀 An enhanced agent powered by WatsonX.ai with AWS S3 & Microsoft 365 Email capabilities")
@@ -180,6 +482,10 @@ def main():
 
     Need help? Click on the 'Chat Commands' section after loading a document to see available commands.
     """}]
+        
+    # Initialize autonomous features if configured
+    if 'autonomous_enabled' not in st.session_state:
+        st.session_state.autonomous_enabled = os.getenv("AUTONOMOUS_ENABLED", "false").lower() == "true"
 
     # Auto-initialize connections if enabled
     if os.getenv("AUTO_INITIALIZE", "false").lower() == "true":
@@ -272,6 +578,12 @@ def main():
 
     # Main layout with tabs
     tab1, tab2 = st.tabs(["Chat", "Configuration"])
+
+    try:
+        add_autonomous_features(tab1, tab2)
+    except Exception as e:
+        logger.error(f"Error initializing autonomous features: {str(e)}")
+        st.error("There was an error setting up autonomous features. You can still use the basic functionality.")
     
     # Tab 1: Chat
     with tab1:
@@ -824,6 +1136,8 @@ def main():
             try:
                 # Create the .env file content
                 env_content = f"""# WatsonX Configuration
+
+
     WATSONX_API_KEY={watsonx_api_key}
     WATSONX_URL={watsonx_url}
     WATSONX_MODEL={watsonx_model}

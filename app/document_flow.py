@@ -1,13 +1,17 @@
 # document_flow.py
+from crewai.flow.flow import Flow, listen, start  # Updated import path
 from crewai import Agent, Task, Crew
-from crewai.flows import Flow, Task as FlowTask
 import logging
 import os
 from typing import Dict, List, Optional
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
 
 class DocumentProcessingFlow:
     """Autonomous document processing flow using CrewAI"""
@@ -76,68 +80,62 @@ class DocumentProcessingFlow:
             allow_delegation=True
         )
     
+
     def create_flow(self):
         """Create the document processing flow"""
         
-        # Create flow tasks
-        discover_document = FlowTask(
+        # Define specific tasks for each agent
+        scout_task = Task(
+            description="Monitor for new documents and identify them for processing",
             agent=self.scout_agent,
-            task_id="discover_document",
-            task="Monitor for new document arrivals in AWS S3 and notify when detected",
-            context="Look for new documents in monitored S3 buckets and trigger processing",
-            output_file="document_detection.json"
+            expected_output="List of documents ready for processing"
         )
         
-        extract_content = FlowTask(
+        reader_task = Task(
+            description="Extract content and metadata from the document",
             agent=self.reader_agent,
-            task_id="extract_content",
-            task="Extract key content and metadata from the document",
-            context="Read the document thoroughly to understand its structure and content",
-            output_file="document_content.json"
+            expected_output="Extracted document content and metadata"
         )
         
-        analyze_document = FlowTask(
+        analyst_task = Task(
+            description="Analyze document content and generate summaries",
             agent=self.analyst_agent,
-            task_id="analyze_document",
-            task="Analyze document content and generate summary and insights",
-            context="Create a comprehensive summary and extract key insights",
-            output_file="document_analysis.json"
+            expected_output="Document analysis and summary"
         )
         
-        classify_document = FlowTask(
+        classifier_task = Task(
+            description="Classify document into appropriate category",
             agent=self.classifier_agent,
-            task_id="classify_document",
-            task="Categorize the document and determine where it should be stored",
-            context="Classify the document into appropriate categories and organize it in S3",
-            output_file="document_classification.json"
+            expected_output="Document classification and category"
         )
         
-        determine_workflow = FlowTask(
+        workflow_task = Task(
+            description="Determine next actions based on document type",
             agent=self.workflow_agent,
-            task_id="determine_workflow",
-            task="Determine appropriate workflows and actions based on document type",
-            context="Decide what actions should be taken, from notifications to review scheduling",
-            output_file="document_workflow.json"
+            expected_output="Workflow actions for the document"
         )
         
-        # Create the flow with task dependencies
+        # Create the flow with tasks
         self.document_flow = Flow(
             name="Autonomous Document Processing",
             description="Process documents automatically from detection through classification and workflow",
-            tasks=[
-                discover_document,
-                extract_content,
-                analyze_document,
-                classify_document,
-                determine_workflow
+            agents=[
+                self.scout_agent,
+                self.reader_agent, 
+                self.analyst_agent,
+                self.classifier_agent,
+                self.workflow_agent
             ],
-            dependencies={
-                "extract_content": ["discover_document"],
-                "analyze_document": ["extract_content"],
-                "classify_document": ["extract_content"],
-                "determine_workflow": ["analyze_document", "classify_document"]
-            }
+            tasks=[
+                scout_task,
+                reader_task,
+                analyst_task,
+                classifier_task,
+                workflow_task
+            ]
         )
+        
+        # Add flow steps/nodes here if required by your Flow implementation
     
     def process_new_document(self, bucket_name, object_key):
         """Process a newly detected document
@@ -151,24 +149,24 @@ class DocumentProcessingFlow:
         """
         try:
             # Download the document
+            import tempfile
             temp_dir = os.path.join(tempfile.gettempdir(), "pdf_agent")
             os.makedirs(temp_dir, exist_ok=True)
             local_path = os.path.join(temp_dir, os.path.basename(object_key))
             
             if self.aws_s3_client.download_file(bucket_name, object_key, local_path):
-                # Create initial inputs for the flow
-                inputs = {
+                logger.info(f"Successfully downloaded {object_key} to {local_path}")
+                
+                # Create initial document context
+                document_context = {
                     "bucket_name": bucket_name,
                     "object_key": object_key,
                     "local_path": local_path,
                     "file_name": os.path.basename(object_key)
                 }
                 
-                # Execute the flow
-                results = self.document_flow.run(inputs=inputs)
-                
-                # Process results and take actions
-                self._process_flow_results(results, local_path)
+                # Execute direct processing - bypassing the flow for now
+                results = self._process_document_directly(local_path, bucket_name, object_key)
                 
                 return {
                     "success": True,
@@ -187,160 +185,215 @@ class DocumentProcessingFlow:
                 "error": str(e)
             }
     
-    def _process_flow_results(self, results, document_path):
-        """Process flow results and take appropriate actions
+    def scan_bucket(self, bucket_name):
+        """Scan a bucket for documents to process
         
         Args:
-            results (dict): Flow results
-            document_path (str): Path to the document
+            bucket_name (str): S3 bucket name
+            
+        Returns:
+            dict: Results of the scan operation
         """
+        if not self.aws_s3_client:
+            return {"success": False, "error": "AWS S3 client not initialized"}
+        
         try:
-            # Extract results from each task
-            document_analysis = results.get("document_analysis", {})
-            document_classification = results.get("document_classification", {})
-            document_workflow = results.get("document_workflow", {})
+            logger.info(f"Scanning bucket: {bucket_name}")
             
-            # Organize document if classification is available
-            if document_classification and "category" in document_classification:
-                from document_classifier import DocumentCategory
-                category = DocumentCategory.from_string(document_classification["category"])
-                
-                # Import document classifier if needed
-                from document_classifier import DocumentClassifier
-                classifier = DocumentClassifier(self.model)
-                
-                # Get bucket name and organize document
-                bucket_name = results.get("document_detection", {}).get("bucket_name")
-                if bucket_name and self.aws_s3_client:
-                    classifier.organize_document(
-                        self.aws_s3_client,
-                        document_path,
-                        bucket_name,
-                        results.get("document_detection", {}).get("object_key")
-                    )
+            # List all PDF files in the bucket (at root level)
+            s3_items = self.aws_s3_client.list_pdfs(bucket_name)
             
-            # Process workflow actions
-            if document_workflow:
-                # Handle notifications
-                if "notify" in document_workflow and document_workflow["notify"]:
-                    recipients = document_workflow.get("recipients", [])
-                    for recipient in recipients:
-                        self._send_notification(
-                            recipient,
-                            document_path,
-                            document_analysis.get("summary"),
-                            document_classification
-                        )
+            if not s3_items:
+                logger.info(f"No items found in bucket {bucket_name}")
+                return {"success": True, "message": "No documents found", "documents": []}
+            
+            # Filter for PDF files
+            pdf_files = [item for item in s3_items if 
+                        isinstance(item, dict) and 
+                        'name' in item and 
+                        item['name'].lower().endswith('.pdf')]
+            
+            if not pdf_files:
+                logger.info(f"No PDF files found in bucket {bucket_name}")
+                return {"success": True, "message": "No PDF documents found", "documents": []}
+            
+            logger.info(f"Found {len(pdf_files)} PDF files in bucket {bucket_name}")
+            
+            # Process each PDF file
+            processed_documents = []
+            for pdf_file in pdf_files:
+                object_key = pdf_file.get('path', pdf_file['name'])
                 
-                # Handle reminders
-                if "set_reminder" in document_workflow and document_workflow["set_reminder"]:
-                    reminder_days = document_workflow.get("reminder_days", 7)
-                    self._schedule_reminder(
-                        document_path,
-                        reminder_days,
-                        document_workflow.get("reminder_note")
-                    )
+                # Skip files that are already in category folders
+                if '/' in object_key:
+                    # This is likely already organized
+                    continue
+                    
+                logger.info(f"Processing document: {object_key}")
+                
+                # Process the document
+                result = self.process_new_document(bucket_name, object_key)
+                
+                if result.get("success", False):
+                    processed_documents.append({
+                        "name": pdf_file['name'],
+                        "key": object_key,
+                        "result": result
+                    })
+                    
+                    # Increment the counter in session state if using Streamlit
+                    import streamlit as st
+                    if 'processed_document_count' in st.session_state:
+                        st.session_state.processed_document_count += 1
+                else:
+                    logger.error(f"Failed to process document {object_key}: {result.get('error', 'Unknown error')}")
+            
+            return {
+                "success": True,
+                "message": f"Processed {len(processed_documents)} documents",
+                "documents": processed_documents
+            }
         except Exception as e:
-            logger.error(f"Error processing flow results: {str(e)}")
-    
-    def _send_notification(self, recipient, document_path, summary, classification):
-        """Send notification email
-        
-        Args:
-            recipient (str): Email recipient
-            document_path (str): Path to document
-            summary (str): Document summary
-            classification (dict): Classification information
-        """
-        if self.ms_graph_client:
-            document_name = os.path.basename(document_path)
-            self.ms_graph_client.create_email_with_summary(
-                recipient,
-                document_name,
-                summary,
-                document_path,
-                classification=classification
-            )
-    
-    def _schedule_reminder(self, document_path, days, note=None):
-        """Schedule a reminder
-        
-        Args:
-            document_path (str): Path to document
-            days (int): Days until reminder
-            note (str, optional): Optional reminder note
-        """
-        if self.ms_graph_client:
-            # Implementation would depend on MS Graph calendar integration
-            pass
+            logger.error(f"Error scanning bucket {bucket_name}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"success": False, "error": str(e)}
 
-# Integration with your existing app.py
+    # Add this method to implement scan across all monitored buckets
+    def scan_all_buckets(self):
+        """Scan all monitored buckets for documents
+        
+        Returns:
+            dict: Results from all bucket scans
+        """
+        # This would be called from the "Scan Now" button
+        import streamlit as st
+        
+        if 'monitored_buckets' not in st.session_state or not st.session_state.monitored_buckets:
+            return {"success": False, "error": "No buckets configured for monitoring"}
+        
+        results = {}
+        for bucket in st.session_state.monitored_buckets:
+            results[bucket] = self.scan_bucket(bucket)
+        
+        return {"success": True, "bucket_results": results}
+    
+    def _process_document_directly(self, document_path, bucket_name, object_key):
+        """Direct document processing as fallback if flow execution fails
+        
+        Args:
+            document_path (str): Path to the document
+            bucket_name (str): S3 bucket name
+            object_key (str): S3 object key
+            
+        Returns:
+            dict: Processing results
+        """
+        results = {}
+        
+        try:
+            # Classification
+            logger.info(f"Directly classifying document: {document_path}")
+            
+            # Initialize document classifier if needed
+            from document_classifier import DocumentClassifier, DocumentCategory
+            classifier = DocumentClassifier(self.model)
+            
+            # Classify the document
+            category, confidence, reasoning, custom_category = classifier.classify_document(document_path)
+            
+            # Record classification results
+            results["classification"] = {
+                "category": category.name if hasattr(category, "name") else str(category),
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "custom_category": custom_category
+            }
+            
+            # Determine the target folder name
+            if category == DocumentCategory.CUSTOM and custom_category:
+                folder_name = custom_category
+            else:
+                folder_name = DocumentCategory.to_folder_name(category)
+            
+            # Actually organize the document in S3
+            logger.info(f"Organizing document in S3: {object_key} to folder {folder_name}")
+            
+            # Determine target key
+            base_name = os.path.basename(object_key)
+            target_key = f"{folder_name}/{base_name}"
+            
+            # Create folder and move file
+            try:
+                # First create folder
+                folder_marker = f"{folder_name}/"
+                self.aws_s3_client.s3_client.put_object(
+                    Bucket=bucket_name,
+                    Key=folder_marker,
+                    Body=''
+                )
+                
+                # Copy the object to new location
+                copy_source = {'Bucket': bucket_name, 'Key': object_key}
+                self.aws_s3_client.s3_client.copy_object(
+                    CopySource=copy_source,
+                    Bucket=bucket_name,
+                    Key=target_key
+                )
+                
+                # Delete the original
+                self.aws_s3_client.s3_client.delete_object(
+                    Bucket=bucket_name,
+                    Key=object_key
+                )
+                
+                results["organization"] = {
+                    "success": True,
+                    "source_key": object_key,
+                    "target_key": target_key,
+                    "folder": folder_name
+                }
+            except Exception as org_error:
+                logger.error(f"Error organizing document: {str(org_error)}")
+                results["organization"] = {
+                    "success": False,
+                    "error": str(org_error)
+                }
+            
+            return results
+        
+        except Exception as e:
+            logger.error(f"Error in _process_document_directly: {str(e)}")
+            results["error"] = str(e)
+            return results
+
 def integrate_document_flow():
     """Create function to integrate with your existing Streamlit app"""
     import streamlit as st
     
     # Initialize the document flow if not already in session state
-    if 'document_flow' not in st.session_state and 'pdf_agent' in st.session_state:
-        watsonx_model = st.session_state.pdf_agent.model
-        aws_s3_client = st.session_state.aws_s3_client if 'aws_s3_client' in st.session_state else None
-        ms_graph_client = st.session_state.ms_graph_client if 'ms_graph_client' in st.session_state else None
-        
-        st.session_state.document_flow = DocumentProcessingFlow(
-            watsonx_model,
-            aws_s3_client,
-            ms_graph_client
-        )
-        
-        st.success("Autonomous document processing flow initialized!")
-    
-    # Add this to your S3 file listing to enable automatic processing
-    # if st.button("Enable Autonomous Processing"):
-    #     if 'document_flow' in st.session_state and 'selected_bucket' in st.session_state:
-    #         bucket = st.session_state.selected_bucket
-    #         st.session_state.autonomous_processing = True
-    #         st.success(f"Autonomous processing enabled for bucket: {bucket}")
-    #         
-    #         # Start monitoring thread
-    #         import threading
-    #         threading.Thread(
-    #             target=monitor_s3_bucket,
-    #             args=(st.session_state.document_flow, bucket),
-    #             daemon=True
-    #         ).start()
-
-def monitor_s3_bucket(document_flow, bucket_name, interval=60):
-    """Monitor an S3 bucket for new documents
-    
-    Args:
-        document_flow: Document processing flow
-        bucket_name (str): S3 bucket to monitor
-        interval (int): Check interval in seconds
-    """
-    import time
-    
-    # Track processed files
-    processed_files = set()
-    
-    while True:
-        try:
-            # List PDF files in the bucket
-            pdfs = document_flow.aws_s3_client.list_pdf_files(bucket_name)
+    if 'document_flow' not in st.session_state:
+        # First check if pdf_agent exists and has a model attribute
+        if 'pdf_agent' in st.session_state and st.session_state.pdf_agent is not None and hasattr(st.session_state.pdf_agent, 'model'):
+            watsonx_model = st.session_state.pdf_agent.model
+            aws_s3_client = st.session_state.aws_s3_client if 'aws_s3_client' in st.session_state else None
+            ms_graph_client = st.session_state.ms_graph_client if 'ms_graph_client' in st.session_state else None
             
-            # Check for new files
-            for pdf in pdfs:
-                if pdf['path'] not in processed_files:
-                    logger.info(f"New document detected: {pdf['path']}")
-                    
-                    # Process the document
-                    result = document_flow.process_new_document(bucket_name, pdf['path'])
-                    
-                    if result.get("success", False):
-                        processed_files.add(pdf['path'])
-                        logger.info(f"Successfully processed new document: {pdf['path']}")
-                    else:
-                        logger.error(f"Failed to process document: {pdf['path']}")
-        except Exception as e:
-            logger.error(f"Error monitoring S3 bucket: {str(e)}")
-        
-        # Wait for next check
-        time.sleep(interval)
+            try:
+                st.session_state.document_flow = DocumentProcessingFlow(
+                    watsonx_model,
+                    aws_s3_client,
+                    ms_graph_client
+                )
+                st.success("Autonomous document processing flow initialized!")
+            except Exception as e:
+                st.error(f"Error initializing document flow: {str(e)}")
+                # Create a simpler version that doesn't depend on CrewAI Flow
+                try:
+                    from document_classifier import DocumentClassifier
+                    st.session_state.classifier = DocumentClassifier(watsonx_model)
+                    st.success("Document classifier initialized (simplified mode)")
+                except Exception as e2:
+                    st.error(f"Could not initialize simplified classifier: {str(e2)}")
+        else:
+            st.error("Cannot initialize document flow: WatsonX model not properly initialized. Please initialize the WatsonX model first.")

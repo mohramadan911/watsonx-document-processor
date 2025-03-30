@@ -308,3 +308,98 @@ class AWSS3Client:
         except Exception as e:
             logger.error(f"Error uploading file {file_path} to bucket {bucket_name}: {str(e)}")
             return False
+        
+def copy_object(self, source_bucket, source_key, dest_bucket, dest_key):
+    """Copy an object from one location to another in S3
+    
+    Args:
+        source_bucket (str): Source bucket name
+        source_key (str): Source object key
+        dest_bucket (str): Destination bucket name
+        dest_key (str): Destination object key
+        
+    Returns:
+        bool: True if copy successful, False otherwise
+    """
+    if not self.s3_client:
+        if not self.connect():
+            return False
+    
+    try:
+        # Create the copy source dictionary
+        copy_source = {
+            'Bucket': source_bucket,
+            'Key': source_key
+        }
+        
+        # Execute the copy operation
+        self.s3_client.copy_object(
+            CopySource=copy_source,
+            Bucket=dest_bucket,
+            Key=dest_key
+        )
+        
+        logger.info(f"Successfully copied {source_bucket}/{source_key} to {dest_bucket}/{dest_key}")
+        return True
+    except Exception as e:
+        logger.error(f"Error copying object {source_bucket}/{source_key} to {dest_bucket}/{dest_key}: {str(e)}")
+        return False
+
+    def delete_object(self, bucket_name, object_key):
+        """Delete an object from S3
+        
+        Args:
+            bucket_name (str): Bucket name
+            object_key (str): Object key to delete
+            
+        Returns:
+            bool: True if deletion successful, False otherwise
+        """
+        if not self.s3_client:
+            if not self.connect():
+                return False
+        
+        try:
+            # Execute the delete operation
+            self.s3_client.delete_object(
+                Bucket=bucket_name,
+                Key=object_key
+            )
+            
+            logger.info(f"Successfully deleted {bucket_name}/{object_key}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting object {bucket_name}/{object_key}: {str(e)}")
+            return False
+
+    def create_folder(self, bucket_name, folder_name):
+        """Create a folder (empty object with trailing slash) in S3
+        
+        Args:
+            bucket_name (str): Bucket name
+            folder_name (str): Folder name/path (will add trailing slash if missing)
+            
+        Returns:
+            bool: True if folder creation successful, False otherwise
+        """
+        if not self.s3_client:
+            if not self.connect():
+                return False
+        
+        try:
+            # Ensure folder name ends with trailing slash
+            if not folder_name.endswith('/'):
+                folder_name += '/'
+            
+            # Create empty object with trailing slash (S3's way of representing folders)
+            self.s3_client.put_object(
+                Bucket=bucket_name,
+                Key=folder_name,
+                Body=''
+            )
+            
+            logger.info(f"Successfully created folder {bucket_name}/{folder_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Error creating folder {bucket_name}/{folder_name}: {str(e)}")
+            return False
