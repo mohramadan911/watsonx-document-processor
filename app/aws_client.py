@@ -71,8 +71,89 @@ class AWSS3Client:
             logger.error(f"Error listing buckets: {str(e)}")
             return []
     
+    def list_folders(self, bucket_name, prefix=""):
+        """List all folders in a bucket
+        
+        Args:
+            bucket_name (str): Name of the S3 bucket
+            prefix (str, optional): Prefix to filter folders. Defaults to "".
+            
+        Returns:
+            list: List of folder names
+        """
+        if not self.s3_client:
+            if not self.connect():
+                return []
+        
+        try:
+            # Remove trailing slash if present to ensure consistent directory handling
+            if prefix and prefix.endswith('/'):
+                prefix = prefix[:-1]
+                
+            # If prefix is provided, add a trailing slash to list contents of that folder
+            delimiter = '/'
+            prefix_with_slash = f"{prefix}/" if prefix else ""
+            
+            response = self.s3_client.list_objects_v2(
+                Bucket=bucket_name,
+                Prefix=prefix_with_slash,
+                Delimiter=delimiter
+            )
+            
+            folders = []
+            
+            # CommonPrefixes are folders
+            if 'CommonPrefixes' in response:
+                for common_prefix in response['CommonPrefixes']:
+                    # Extract folder name from the prefix (remove the trailing slash)
+                    folder_path = common_prefix['Prefix']
+                    
+                    # Remove the prefix we searched for to get just the folder name
+                    if prefix_with_slash:
+                        folder_name = folder_path[len(prefix_with_slash):]
+                    else:
+                        folder_name = folder_path
+                        
+                    # Remove trailing slash if present
+                    if folder_name.endswith('/'):
+                        folder_name = folder_name[:-1]
+                        
+                    folders.append({
+                        'name': folder_name,
+                        'path': folder_path,
+                        'type': 'folder'
+                    })
+            
+            logger.info(f"Found {len(folders)} folders in bucket {bucket_name} with prefix {prefix}")
+            return folders
+        except Exception as e:
+            logger.error(f"Error listing folders in bucket {bucket_name}: {str(e)}")
+            return []
+    
     def list_pdfs(self, bucket_name, prefix="", max_keys=100):
-        """List all PDF files in a bucket
+        """List all PDF files in a bucket with folder structure
+        
+        Args:
+            bucket_name (str): Name of the S3 bucket
+            prefix (str, optional): Prefix/folder to search in. Defaults to "".
+            max_keys (int, optional): Maximum number of keys to return. Defaults to 100.
+            
+        Returns:
+            list: List of PDF items with name, path, and type
+        """
+        # Get folders first
+        folders = self.list_folders(bucket_name, prefix)
+        
+        # Get PDF files in the current prefix
+        pdfs = self.list_pdf_files(bucket_name, prefix, max_keys)
+        
+        # Combine the results
+        results = folders + pdfs
+        
+        return sorted(results, key=lambda x: (x['type'], x['name']))
+    
+    def list_pdf_files(self, bucket_name, prefix="", max_keys=100):
+        """List PDF files (not folders) in a bucket
         
         Args:
             bucket_name (str): Name of the S3 bucket
@@ -80,13 +161,55 @@ class AWSS3Client:
             max_keys (int, optional): Maximum number of keys to return. Defaults to 100.
             
         Returns:
-            list: List of PDF filenames
+            list: List of PDF objects with metadata
         """
-        objects = self.list_objects(bucket_name, prefix, max_keys)
-        # Extract just the filenames from the objects
-        pdf_names = [obj['name'] for obj in objects]
-        logger.info(f"Found {len(pdf_names)} PDF files in bucket {bucket_name}")
-        return pdf_names
+        if not self.s3_client:
+            if not self.connect():
+                return []
+        
+        try:
+            # Remove trailing slash if present to ensure consistent directory handling
+            clean_prefix = prefix
+            if clean_prefix and clean_prefix.endswith('/'):
+                clean_prefix = clean_prefix[:-1]
+                
+            # If prefix exists, add trailing slash
+            prefix_with_slash = f"{clean_prefix}/" if clean_prefix else ""
+            
+            response = self.s3_client.list_objects_v2(
+                Bucket=bucket_name,
+                Prefix=prefix_with_slash,
+                Delimiter='/',
+                MaxKeys=max_keys
+            )
+            
+            pdfs = []
+            
+            # Contents are files (not folders)
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    # Skip folder markers (objects ending with /)
+                    if obj['Key'].endswith('/'):
+                        continue
+                        
+                    # Only include PDF files
+                    if obj['Key'].lower().endswith('.pdf'):
+                        # Extract the filename without the path
+                        filename = os.path.basename(obj['Key'])
+                        
+                        pdfs.append({
+                            'name': filename,
+                            'path': obj['Key'],
+                            'size': obj['Size'],
+                            'last_modified': obj['LastModified'],
+                            'type': 'file'
+                        })
+            
+            logger.info(f"Found {len(pdfs)} PDF files in bucket {bucket_name} with prefix {prefix}")
+            return pdfs
+        except Exception as e:
+            logger.error(f"Error listing PDF files in bucket {bucket_name}: {str(e)}")
+            return []
     
     def list_objects(self, bucket_name, prefix="", max_keys=100):
         """List objects in a bucket with optional prefix

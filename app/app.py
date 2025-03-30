@@ -7,6 +7,7 @@ import os
 import logging
 from datetime import datetime
 import dotenv
+from document_classifier import DocumentClassifier, DocumentCategory
 
 # Load environment variables from .env file
 dotenv.load_dotenv()
@@ -75,7 +76,66 @@ def get_custom_pdf_tool(pdf_path, watsonx_model):
     except Exception as e:
         local_logger.error(f"Error initializing CustomPDFSearchTool: {str(e)}")
         raise
+# Modify the classify_and_organize_document function in app.py to save classification results
 
+def classify_and_organize_document(pdf_path, bucket_name=None, original_key=None):
+    """Classify and organize a document
+    
+    Args:
+        pdf_path (str): Path to the PDF file
+        bucket_name (str, optional): S3 bucket name for organizing
+        original_key (str, optional): Original S3 object key
+        
+    Returns:
+        dict: Classification result
+    """
+    if not st.session_state.document_classifier:
+        return {"success": False, "error": "Document classifier not initialized"}
+    
+    # Classify the document
+    try:
+        category, confidence, reasoning, custom_category_name = st.session_state.document_classifier.classify_document(pdf_path)
+        
+        # If a bucket is specified, organize the document in S3
+        if bucket_name and st.session_state.aws_s3_client:
+            result = st.session_state.document_classifier.organize_document(
+                st.session_state.aws_s3_client,
+                pdf_path,
+                bucket_name,
+                original_key
+            )
+            
+            # Save classification results for email use
+            if result.get("success", False):
+                st.session_state.document_classification = result
+            
+            return result
+        else:
+            # Just return the classification without organizing
+            if category == DocumentCategory.CUSTOM and custom_category_name:
+                folder_name = custom_category_name
+            else:
+                folder_name = DocumentCategory.to_folder_name(category)
+                
+            result = {
+                "success": True,
+                "category": category.name,
+                "custom_category": custom_category_name,
+                "folder": folder_name,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "organized": False,
+                "is_custom_category": category == DocumentCategory.CUSTOM
+            }
+            
+            # Save classification results for email use
+            st.session_state.document_classification = result
+            
+            return result
+    except Exception as e:
+        logger.error(f"Error in classify_and_organize_document: {str(e)}")
+        return {"success": False, "error": str(e)}
+    
 def main():
     st.title('WatsonX PDF Agent 🤖')
     st.caption("🚀 An enhanced agent powered by WatsonX.ai with AWS S3 & Microsoft 365 Email capabilities")
@@ -95,9 +155,31 @@ def main():
         
     if 'ms_graph_client' not in st.session_state:
         st.session_state.ms_graph_client = None
+
+    if 'document_classifier' not in st.session_state:
+        st.session_state.document_classifier = None
         
     if 'messages' not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "👋 Hello! Please upload or select a PDF document, then you can ask questions, request a summary, or get recommendations. I can also help you send emails about the document or set reminders for later review."}]
+        st.session_state.messages = [{"role": "assistant", "content": """
+    👋 Welcome to the WatsonX PDF Agent! 
+
+    This AI-powered assistant helps you analyze and interact with your PDF documents.
+
+    **Getting Started:**
+    1. Visit the **Configuration** tab to set up your WatsonX API key and connections
+    2. Initialize the WatsonX model
+    3. Return here to upload or select a PDF document from your computer or S3
+
+    Once you've loaded a document, I can help you:
+    - Answer questions about the document content
+    - Generate comprehensive summaries
+    - Provide recommendations based on the document
+    - Send emails about the document (with Microsoft integration)
+    - Set reminders for future review
+    - Classify and organize your documents
+
+    Need help? Click on the 'Chat Commands' section after loading a document to see available commands.
+    """}]
 
     # Auto-initialize connections if enabled
     if os.getenv("AUTO_INITIALIZE", "false").lower() == "true":
@@ -148,6 +230,13 @@ def main():
                         pdf_search_tool=None,
                         ms_graph_client=ms_graph_client
                     )
+
+                    # Initialize the document classifier
+                    st.session_state.document_classifier = DocumentClassifier(
+                        model,  # This is the WatsonX model instance
+                        pdf_search_tool=None
+                    )
+                    logger.info("Document classifier auto-initialized")
                     st.success("WatsonX model auto-initialized successfully")
                 except Exception as e:
                     st.error(f"Error auto-initializing WatsonX model: {str(e)}")
@@ -190,45 +279,91 @@ def main():
         if st.session_state.pdf_path:
             file_name = os.path.basename(st.session_state.pdf_path)
             
-            # Create columns for document info and action buttons
-            col1, col2 = st.columns([3, 1])
+            # Show document info bar at full width
+            st.info(f"📄 Current document: {file_name}")
             
-            with col1:
-                st.info(f"📄 Current document: {file_name}")
+            # Create a row of three equally sized buttons below the info bar
+            action_col1, action_col2, action_col3 = st.columns(3)
             
-            with col2:
-                # Add quick action buttons for common tasks
-                action_col1, action_col2 = st.columns(2)
-                with action_col1:
-                    if st.button("📝 Summarize"):
-                        # Add message to chat asking for summary
-                        prompt = "Summarize this document"
-                        st.chat_message('user').markdown(prompt)
-                        st.session_state.messages.append({'role': 'user', 'content': prompt})
+            with action_col1:
+                if st.button("📝 Summarize", use_container_width=True):
+                    # Add message to chat asking for summary
+                    prompt = "Summarize this document"
+                    st.chat_message('user').markdown(prompt)
+                    st.session_state.messages.append({'role': 'user', 'content': prompt})
+                    
+                    # Process with PDF agent
+                    if st.session_state.pdf_agent:
+                        with st.spinner("Generating summary..."):
+                            response = st.session_state.pdf_agent.process_document(st.session_state.pdf_path, prompt)
                         
-                        # Process with PDF agent
-                        if st.session_state.pdf_agent:
-                            with st.spinner("Generating summary..."):
-                                response = st.session_state.pdf_agent.process_document(st.session_state.pdf_path, prompt)
+                        # Display response
+                        st.chat_message('assistant').markdown(response)
+                        st.session_state.messages.append({'role': 'assistant', 'content': response})
+                        st.rerun()
+            
+            with action_col2:
+                if st.button("🧠 Recommend", use_container_width=True):
+                    # Add message to chat asking for recommendations
+                    prompt = "What are your recommendations based on this document?"
+                    st.chat_message('user').markdown(prompt)
+                    st.session_state.messages.append({'role': 'user', 'content': prompt})
+                    
+                    # Process with PDF agent
+                    if st.session_state.pdf_agent:
+                        with st.spinner("Generating recommendations..."):
+                            response = st.session_state.pdf_agent.process_document(st.session_state.pdf_path, prompt)
+                        
+                        # Display response
+                        st.chat_message('assistant').markdown(response)
+                        st.session_state.messages.append({'role': 'assistant', 'content': response})
+                        st.rerun()
+            
+            with action_col3:
+                if st.button("🏷️ Classify", use_container_width=True):
+                    # Show a spinner while classifying
+                    with st.spinner("Classifying document..."):
+                        # Get current bucket if document came from S3
+                        current_bucket = st.session_state.get('selected_bucket', None)
+                        original_key = None
+                        
+                        # Check if we have the original key stored
+                        if hasattr(st.session_state, 'current_s3_key') and st.session_state.current_s3_key:
+                            original_key = st.session_state.current_s3_key
+                        
+                        # Classify the document
+                        result = classify_and_organize_document(
+                            st.session_state.pdf_path,
+                            bucket_name=current_bucket,
+                            original_key=original_key
+                        )
+                        
+                        # Add a message to chat with the classification result
+                        if result.get("success", False):
+                            prompt = f"This document has been classified as: {result['category']} (Confidence: {result['confidence']:.2f})"
+                            if "target_key" in result:
+                                prompt += f"\nThe document has been organized into the {result['folder']} folder."
+                            prompt += f"\n\nReasoning: {result['reasoning']}"
                             
-                            # Display response
+                            st.chat_message('user').markdown(prompt)
+                            st.session_state.messages.append({'role': 'user', 'content': prompt})
+                            
+                            # Have the assistant acknowledge
+                            response = f"✅ I've classified this document as **{result['category']}**."
+                            if "target_key" in result:
+                                response += f" It has been organized into the **{result['folder']}** folder in your S3 bucket."
+                            response += f"\n\nConfidence: {result['confidence']:.2f}\n\n**Reasoning**: {result['reasoning']}"
+                            
                             st.chat_message('assistant').markdown(response)
                             st.session_state.messages.append({'role': 'assistant', 'content': response})
                             st.rerun()
-                
-                with action_col2:
-                    if st.button("🧠 Recommend"):
-                        # Add message to chat asking for recommendations
-                        prompt = "What are your recommendations based on this document?"
-                        st.chat_message('user').markdown(prompt)
-                        st.session_state.messages.append({'role': 'user', 'content': prompt})
-                        
-                        # Process with PDF agent
-                        if st.session_state.pdf_agent:
-                            with st.spinner("Generating recommendations..."):
-                                response = st.session_state.pdf_agent.process_document(st.session_state.pdf_path, prompt)
+                        else:
+                            # Handle error
+                            error_msg = result.get("error", "Unknown error during classification")
+                            st.error(f"Classification failed: {error_msg}")
                             
-                            # Display response
+                            # Add error to chat
+                            response = f"❌ I couldn't classify this document: {error_msg}"
                             st.chat_message('assistant').markdown(response)
                             st.session_state.messages.append({'role': 'assistant', 'content': response})
                             st.rerun()
@@ -284,6 +419,47 @@ def main():
             # Display AI response
             st.chat_message('assistant').markdown(response)
             st.session_state.messages.append({'role': 'assistant', 'content': response})
+
+        if prompt and "classify" in prompt.lower():
+            # User wants to classify the document
+            with st.spinner("Classifying document..."):
+                # Get current bucket if document came from S3
+                current_bucket = st.session_state.get('selected_bucket', None)
+                original_key = None
+                
+                # Check if we have the original key stored
+                if hasattr(st.session_state, 'current_s3_key') and st.session_state.current_s3_key:
+                    original_key = st.session_state.current_s3_key
+                
+                # Classify the document
+                result = classify_and_organize_document(
+                    st.session_state.pdf_path,
+                    bucket_name=current_bucket,
+                    original_key=original_key
+                )
+                
+                # Prepare response based on result
+                if result.get("success", False):
+                    # Check if it's a custom category
+                    if result.get("is_custom_category", False) and result.get("custom_category"):
+                        category_display = result.get("custom_category")
+                    else:
+                        category_display = result['category']
+                        
+                    response = f"✅ I've classified this document as **{category_display}**."
+                    if "target_key" in result:
+                        response += f" It has been organized into the **{result['folder']}** folder in your S3 bucket."
+                        # If it's a custom category, add a note about folder creation
+                        if result.get("is_custom_category", False):
+                            response += f"\n\n*Note: I've created a new folder for this category since it didn't match any of the standard categories.*"
+                    response += f"\n\nConfidence: {result['confidence']:.2f}\n\n**Reasoning**: {result['reasoning']}"
+                else:
+                    error_msg = result.get("error", "Unknown error during classification")
+                    response = f"❌ I couldn't classify this document: {error_msg}"
+                
+                # Display AI response
+                st.chat_message('assistant').markdown(response)
+                st.session_state.messages.append({'role': 'assistant', 'content': response})    
     
     # Tab 2: Configuration
     with tab2:
@@ -292,10 +468,10 @@ def main():
         # WatsonX Configuration
         st.subheader("WatsonX Configuration")
         watsonx_api_key = st.text_input("WatsonX API Key", key="watsonx_api_key", 
-                                     value=os.getenv("WATSONX_API_KEY", ""), type="password")
+                                    value=os.getenv("WATSONX_API_KEY", ""), type="password")
         watsonx_url = st.text_input("WatsonX URL", key="watsonx_url", 
-                                  value=os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com"), 
-                                  type="default")   
+                                value=os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com"), 
+                                type="default")   
         watsonx_model = st.selectbox(
             "Model", 
             ["meta-llama/llama-3-3-70b-instruct", "ibm/granite-20b-instruct-v2", "meta-llama/llama-2-70b-chat"],
@@ -306,11 +482,52 @@ def main():
             value=os.getenv("WATSONX_MODEL_PARAMS", '{"decoding_method":"sample", "max_new_tokens":500, "temperature":0.5}'), 
             key="watsonx_model_params"
         )
+
+        # Initialize/Configure WatsonX model
+        if st.button("Initialize WatsonX Model"):
+            try:
+                my_credentials = {
+                    "url": watsonx_url,
+                    "apikey": watsonx_api_key
+                }
+                
+                # Parse model parameters
+                params = json.loads(watsonx_model_params)
+                project_id = os.getenv("WATSONX_PROJECT_ID", "ea1bfd72-28d6-4a4d-8668-c1de89865515")
+                space_id = None
+                verify = False
+                
+                model = Model(watsonx_model, my_credentials, params, project_id, space_id, verify)
+                
+                # Initialize PDF agent with model and any existing MS Graph client
+                ms_graph_client = st.session_state.ms_graph_client if 'ms_graph_client' in st.session_state else None
+                
+                # Get any existing PDF search tool
+                pdf_search_tool = st.session_state.pdf_search_tool if 'pdf_search_tool' in st.session_state else None
+                
+                st.session_state.pdf_agent = WatsonxPDFAgent(
+                    model, 
+                    pdf_search_tool=pdf_search_tool,
+                    ms_graph_client=ms_graph_client
+                )
+                
+                # Initialize the document classifier
+                st.session_state.document_classifier = DocumentClassifier(
+                    model,  # This is the WatsonX model instance
+                    pdf_search_tool=pdf_search_tool
+                )
+                logger.info("Document classifier initialized")
+                
+                st.success("WatsonX model initialized successfully!")
+            except Exception as e:
+                st.error(f"Error initializing WatsonX model: {str(e)}")
+                logger.error(f"Error initializing WatsonX model: {str(e)}")
         
+        # Main configuration columns
         col1, col2 = st.columns(2)
         
+        # AWS S3 Configuration Column
         with col1:
-            # AWS S3 Configuration
             st.subheader("AWS S3 Configuration")
             aws_access_key = st.text_input("AWS Access Key", key="aws_access_key", 
                                         value=os.getenv("AWS_ACCESS_KEY_ID", ""))
@@ -344,6 +561,7 @@ def main():
                     st.error(f"Error connecting to AWS S3: {str(e)}")
             
             # If AWS S3 is connected, show PDF selection options
+            # If AWS S3 is connected, show PDF selection with folder navigation
             if 'aws_s3_client' in st.session_state and st.session_state.aws_s3_client:
                 if 'aws_buckets' in st.session_state and st.session_state.aws_buckets:
                     selected_bucket = st.selectbox(
@@ -353,110 +571,144 @@ def main():
                     )
                     
                     if selected_bucket:
-                        # List PDFs in the selected bucket
-                        pdfs = st.session_state.aws_s3_client.list_pdfs(selected_bucket)
+                        # Initialize or get the current folder path
+                        if 'current_s3_folder' not in st.session_state:
+                            st.session_state.current_s3_folder = ""
                         
-                        if pdfs:
-                            selected_pdf = st.selectbox(
-                                "Select PDF from S3", 
-                                options=pdfs,
-                                key="selected_s3_pdf"
+                        # Show current path and provide a way to go up a level
+                        if st.session_state.current_s3_folder:
+                            # Use a horizontal layout instead of columns to avoid nesting issues
+                            st.write(f"Current folder: /{st.session_state.current_s3_folder}" if st.session_state.current_s3_folder else "Root folder")
+                            
+                            if st.button("⬆️ Go Up"):
+                                # Go up one level
+                                path_parts = st.session_state.current_s3_folder.split('/')
+                                if len(path_parts) > 1:
+                                    st.session_state.current_s3_folder = '/'.join(path_parts[:-1])
+                                else:
+                                    st.session_state.current_s3_folder = ""
+                                st.rerun()
+                        
+                        # List files and folders in the current directory
+                        s3_items = st.session_state.aws_s3_client.list_pdfs(
+                            selected_bucket, 
+                            prefix=st.session_state.current_s3_folder
+                        )
+                        
+                        if s3_items:
+                            # Format the items into a nice display list
+                            item_options = []
+                            item_paths = {}
+                            
+                            for item in s3_items:
+                                display_name = f"📁 {item['name']}" if item['type'] == 'folder' else f"📄 {item['name']}"
+                                item_options.append(display_name)
+                                if 'path' in item:
+                                    item_paths[display_name] = item['path']
+                                else:
+                                    item_paths[display_name] = item['name']
+                            
+                            selected_item = st.selectbox(
+                                "Select File or Folder", 
+                                options=item_options,
+                                key="selected_s3_item"
                             )
                             
-                            if selected_pdf and st.button("Load PDF from S3"):
-                                with st.spinner("Downloading PDF from S3..."):
-                                    # Create temp file
-                                    temp_dir = tempfile.mkdtemp()
-                                    local_path = os.path.join(temp_dir, selected_pdf)
-                                    
-                                    # Download the file
-                                    try:
-                                        # Get the full object key by searching for the filename
-                                        objects = st.session_state.aws_s3_client.list_objects(selected_bucket)
-                                        obj_key = None
-                                        for obj in objects:
-                                            if obj['name'] == selected_pdf:
-                                                obj_key = obj['key']
-                                                break
-                                        
-                                        if not obj_key:
-                                            st.error(f"Could not find the full path for {selected_pdf} in bucket {selected_bucket}")
-                                            return
+                            if selected_item:
+                                # Get the path of the selected item
+                                selected_path = item_paths[selected_item]
+                                
+                                # Check if it's a folder or file
+                                is_folder = selected_item.startswith("📁")
+                                
+                                # Handle folder navigation
+                                if is_folder:
+                                    if st.button(f"Open Folder: {selected_item[2:]}"):
+                                        st.session_state.current_s3_folder = selected_path
+                                        st.rerun()
+                                # Handle file selection
+                                else:
+                                    if st.button(f"Load PDF: {selected_item[2:]}"):
+                                        with st.spinner("Downloading PDF from S3..."):
+                                            # Get the file path
+                                            if st.session_state.current_s3_folder:
+                                                object_key = f"{st.session_state.current_s3_folder}/{selected_path}"
+                                            else:
+                                                object_key = selected_path
                                             
-                                        # Create a temporary directory
-                                        temp_dir = tempfile.mkdtemp()
-                                        local_path = os.path.join(temp_dir, selected_pdf)
-                                        
-                                        if st.session_state.aws_s3_client.download_file(selected_bucket, obj_key, local_path):
-                                            # Verify the file exists
-                                            if not os.path.exists(local_path):
-                                                st.error(f"File was downloaded but couldn't be found at {local_path}")
-                                                return
-                                                
-                                            # Store the absolute path
-                                            st.session_state.pdf_path = os.path.abspath(local_path)
+                                            # Store the original key for future reference
+                                            st.session_state.current_s3_key = object_key
                                             
-                                            # Log the path for debugging
-                                            logger.info(f"PDF downloaded to: {st.session_state.pdf_path}")
-                                            st.info(f"PDF downloaded to: {st.session_state.pdf_path}")
+                                            # Download the file code...
+                                            # (Keeping the existing download code)
+                                            # Create a temporary directory
+                                            temp_dir = tempfile.mkdtemp()
+                                            local_path = os.path.join(temp_dir, os.path.basename(selected_path))
                                             
-                                            # Initialize PDF search tool and update the agent
+                                            # Download the file
                                             try:
-                                                # Check if we have a watsonx model initialized
-                                                if 'pdf_agent' in st.session_state and st.session_state.pdf_agent:
-                                                    # Get the model from the PDF agent
-                                                    watsonx_model = st.session_state.pdf_agent.model
+                                                if st.session_state.aws_s3_client.download_file(selected_bucket, object_key, local_path):
+                                                    # Verification and processing code...
+                                                    # (Keeping the existing processing code)
+                                                    # Verify the file exists
+                                                    if not os.path.exists(local_path):
+                                                        st.error(f"File was downloaded but couldn't be found at {local_path}")
+                                                        return
+                                                        
+                                                    # Store the absolute path
+                                                    st.session_state.pdf_path = os.path.abspath(local_path)
                                                     
-                                                    # Make a local copy of the file in a directory without "knowledge/" prefix issues
-                                                    # Create a temporary directory with a safe name
-                                                    safe_dir = tempfile.mkdtemp(prefix="safe_pdf_")
-                                                    safe_file_path = os.path.join(safe_dir, selected_pdf)
+                                                    # Log the path for debugging
+                                                    logger.info(f"PDF downloaded to: {st.session_state.pdf_path}")
+                                                    st.info(f"PDF downloaded to: {st.session_state.pdf_path}")
                                                     
-                                                    # Copy the file to the safe location
-                                                    import shutil
-                                                    shutil.copy2(st.session_state.pdf_path, safe_file_path)
-                                                    
-                                                    # Log the safe path
-                                                    logger.info(f"Using safe PDF path: {safe_file_path}")
-                                                    
-                                                    # Initialize PDF search tool with the model
+                                                    # Initialize PDF search tool code...
+                                                    # (Keeping the existing PDF tool initialization code)
                                                     try:
-                                                        # Use helper function to avoid circular imports
-                                                        st.session_state.pdf_search_tool = get_custom_pdf_tool(
-                                                            safe_file_path,
-                                                            watsonx_model
-                                                        )
-                                                        st.success(f"PDF loaded successfully: {selected_pdf}")
+                                                        if 'pdf_agent' in st.session_state and st.session_state.pdf_agent:
+                                                            watsonx_model = st.session_state.pdf_agent.model
+                                                            
+                                                            safe_dir = tempfile.mkdtemp(prefix="safe_pdf_")
+                                                            safe_file_path = os.path.join(safe_dir, os.path.basename(selected_path))
+                                                            
+                                                            import shutil
+                                                            shutil.copy2(st.session_state.pdf_path, safe_file_path)
+                                                            
+                                                            logger.info(f"Using safe PDF path: {safe_file_path}")
+                                                            
+                                                            try:
+                                                                st.session_state.pdf_search_tool = get_custom_pdf_tool(
+                                                                    safe_file_path,
+                                                                    watsonx_model
+                                                                )
+                                                                st.success(f"PDF loaded successfully: {os.path.basename(selected_path)}")
+                                                            except Exception as e:
+                                                                st.error(f"Error with PDF tool: {str(e)}")
+                                                                logger.error(f"PDF tool error: {str(e)}")
+                                                            
+                                                            st.session_state.pdf_agent.pdf_search_tool = st.session_state.pdf_search_tool
+                                                            
+                                                            st.session_state.messages.append({
+                                                                "role": "assistant", 
+                                                                "content": f"📄 I've loaded '{os.path.basename(selected_path)}' from S3. What would you like to know about this document?"
+                                                            })
+                                                            
+                                                            st.rerun()
+                                                        else:
+                                                            st.error("Please initialize WatsonX model first before loading PDF")
                                                     except Exception as e:
-                                                        st.error(f"Error with PDF tool: {str(e)}")
-                                                        logger.error(f"PDF tool error: {str(e)}")
-                                                    
-                                                    # Update the PDF agent with the search tool
-                                                    st.session_state.pdf_agent.pdf_search_tool = st.session_state.pdf_search_tool
-                                                    st.success(f"PDF loaded successfully: {selected_pdf}")
-                                                    
-                                                    # Add system message
-                                                    st.session_state.messages.append({
-                                                        "role": "assistant", 
-                                                        "content": f"📄 I've loaded '{selected_pdf}' from S3. What would you like to know about this document?"
-                                                    })
-                                                    
-                                                    st.rerun()
+                                                        st.error(f"Error initializing PDF search tool: {str(e)}")
+                                                        logger.error(f"Error initializing PDF search tool: {str(e)}")
                                                 else:
-                                                    st.error("Please initialize WatsonX model first before loading PDF")
+                                                    st.error(f"Failed to download {selected_path} from S3")
                                             except Exception as e:
-                                                st.error(f"Error initializing PDF search tool: {str(e)}")
-                                                logger.error(f"Error initializing PDF search tool: {str(e)}")
-                                        else:
-                                            st.error(f"Failed to download {selected_pdf} from S3")
-                                    except Exception as e:
-                                        st.error(f"Error processing PDF: {str(e)}")
-                                        logger.error(f"Error processing PDF: {str(e)}")
+                                                st.error(f"Error processing PDF: {str(e)}")
+                                                logger.error(f"Error processing PDF: {str(e)}")
                         else:
-                            st.warning(f"No PDF files found in bucket {selected_bucket}")
+                            st.warning(f"No items found in the current folder")
         
+        # Microsoft Graph API Configuration Column
         with col2:
-            # Microsoft Graph API Configuration
             st.subheader("Microsoft Graph API Configuration")
             ms_client_id = st.text_input("Microsoft App Client ID", key="ms_client_id", 
                                 value=os.getenv("MS_CLIENT_ID", ""))
@@ -468,9 +720,10 @@ def main():
             ms_user_email = st.text_input("Microsoft User Email", key="ms_user_email", 
                                 value=os.getenv("MS_USER_EMAIL", ""))
             
-            col2a, col2b = st.columns(2)
+            # Two buttons side by side without using nested columns
+            ms_graph_col1, ms_graph_col2 = st.columns(2)
             
-            with col2a:
+            with ms_graph_col1:
                 if st.button("Configure Microsoft Graph"):
                     try:
                         st.session_state.ms_graph_client = MSGraphClient(
@@ -483,7 +736,6 @@ def main():
                         if st.session_state.ms_graph_client.get_token():
                             st.success("Connected to Microsoft Graph API successfully!")
                             
-                            # Update the PDF agent with the MS Graph client if it exists
                             if 'pdf_agent' in st.session_state and st.session_state.pdf_agent:
                                 st.session_state.pdf_agent.ms_graph_client = st.session_state.ms_graph_client
                                 st.success("PDF agent updated with email capabilities!")
@@ -492,53 +744,17 @@ def main():
                     except Exception as e:
                         st.error(f"Error connecting to Microsoft Graph API: {str(e)}")
             
-            with col2b:
-                # Add the Reset Configuration button here
+            with ms_graph_col2:
                 if st.button("Reset Configuration"):
-                    # Clear existing connections
                     if 'ms_graph_client' in st.session_state:
                         del st.session_state.ms_graph_client
                     
-                    # Reload environment variables
                     dotenv.load_dotenv(override=True)
                     
                     st.success("Configuration reset successfully")
                     st.rerun()
         
-        # Initialize/Configure WatsonX model
-        if st.button("Initialize WatsonX Model"):
-            try:
-                my_credentials = {
-                    "url": watsonx_url,
-                    "apikey": watsonx_api_key
-                }
-                
-                # Parse model parameters
-                params = json.loads(watsonx_model_params)
-                project_id = os.getenv("WATSONX_PROJECT_ID", "ea1bfd72-28d6-4a4d-8668-c1de89865515")
-                space_id = None
-                verify = False
-                
-                model = Model(watsonx_model, my_credentials, params, project_id, space_id, verify)
-                
-                # Initialize PDF agent with model and any existing MS Graph client
-                ms_graph_client = st.session_state.ms_graph_client if 'ms_graph_client' in st.session_state else None
-                
-                # Get any existing PDF search tool
-                pdf_search_tool = st.session_state.pdf_search_tool if 'pdf_search_tool' in st.session_state else None
-                
-                st.session_state.pdf_agent = WatsonxPDFAgent(
-                    model, 
-                    pdf_search_tool=pdf_search_tool,
-                    ms_graph_client=ms_graph_client
-                )
-                
-                st.success("WatsonX model initialized successfully!")
-            except Exception as e:
-                st.error(f"Error initializing WatsonX model: {str(e)}")
-                logger.error(f"Error initializing WatsonX model: {str(e)}")
-        
-        # Upload PDF directly
+        # Upload PDF directly section - outside the columns to avoid nesting issues
         st.subheader("Upload PDF")
         uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
         
@@ -564,35 +780,28 @@ def main():
                 logger.info(f"PDF uploaded to: {st.session_state.pdf_path}")
                 st.info(f"PDF saved to: {st.session_state.pdf_path}")
                 
+                # PDF agent initialization after upload
+                # (Keeping the existing initialization code)
                 try:
-                    # Check if we have a watsonx model initialized
                     if 'pdf_agent' in st.session_state and st.session_state.pdf_agent:
-                        # Get the model from the PDF agent
                         watsonx_model = st.session_state.pdf_agent.model
                         
-                        # Make a local copy of the file in a directory without "knowledge/" prefix issues
-                        # Create a temporary directory with a safe name
                         safe_dir = tempfile.mkdtemp(prefix="safe_pdf_")
                         safe_file_path = os.path.join(safe_dir, uploaded_file.name)
                         
-                        # Copy the file to the safe location
                         import shutil
                         shutil.copy2(st.session_state.pdf_path, safe_file_path)
                         
-                        # Log the safe path
                         logger.info(f"Using safe PDF path: {safe_file_path}")
                         
                         try:
-                            # Use helper function to avoid circular imports
                             st.session_state.pdf_search_tool = get_custom_pdf_tool(
                                 safe_file_path,
                                 watsonx_model
                             )
                             
-                            # Update the PDF agent with the search tool
                             st.session_state.pdf_agent.pdf_search_tool = st.session_state.pdf_search_tool
                             
-                            # Add system message
                             st.session_state.messages.append({
                                 "role": "assistant", 
                                 "content": f"📄 I've loaded '{uploaded_file.name}'. What would you like to know about this document?"
@@ -603,18 +812,6 @@ def main():
                         except Exception as e:
                             st.error(f"Error with PDF tool: {str(e)}")
                             logger.error(f"PDF tool error: {str(e)}")
-                        
-                        # Update the PDF agent with the search tool
-                        st.session_state.pdf_agent.pdf_search_tool = st.session_state.pdf_search_tool
-                        
-                        # Add system message
-                        st.session_state.messages.append({
-                            "role": "assistant", 
-                            "content": f"📄 I've loaded '{uploaded_file.name}'. What would you like to know about this document?"
-                        })
-                        
-                        st.success(f"PDF uploaded successfully: {uploaded_file.name}")
-                        st.rerun()
                     else:
                         st.warning("Please initialize WatsonX model first")
                 except Exception as e:
@@ -627,26 +824,26 @@ def main():
             try:
                 # Create the .env file content
                 env_content = f"""# WatsonX Configuration
-WATSONX_API_KEY={watsonx_api_key}
-WATSONX_URL={watsonx_url}
-WATSONX_MODEL={watsonx_model}
-WATSONX_MODEL_PARAMS={watsonx_model_params}
-WATSONX_PROJECT_ID={os.getenv("WATSONX_PROJECT_ID", "ea1bfd72-28d6-4a4d-8668-c1de89865515")}
+    WATSONX_API_KEY={watsonx_api_key}
+    WATSONX_URL={watsonx_url}
+    WATSONX_MODEL={watsonx_model}
+    WATSONX_MODEL_PARAMS={watsonx_model_params}
+    WATSONX_PROJECT_ID={os.getenv("WATSONX_PROJECT_ID", "ea1bfd72-28d6-4a4d-8668-c1de89865515")}
 
-# AWS S3 Configuration
-AWS_ACCESS_KEY_ID={aws_access_key}
-AWS_SECRET_ACCESS_KEY={aws_secret_key}
-AWS_REGION={aws_region}
+    # AWS S3 Configuration
+    AWS_ACCESS_KEY_ID={aws_access_key}
+    AWS_SECRET_ACCESS_KEY={aws_secret_key}
+    AWS_REGION={aws_region}
 
-# Microsoft Graph API Configuration
-MS_CLIENT_ID={ms_client_id}
-MS_CLIENT_SECRET={ms_client_secret}
-MS_TENANT_ID={ms_tenant_id}
-MS_USER_EMAIL={ms_user_email}
+    # Microsoft Graph API Configuration
+    MS_CLIENT_ID={ms_client_id}
+    MS_CLIENT_SECRET={ms_client_secret}
+    MS_TENANT_ID={ms_tenant_id}
+    MS_USER_EMAIL={ms_user_email}
 
-# Auto-initialization
-AUTO_INITIALIZE=true
-"""
+    # Auto-initialization
+    AUTO_INITIALIZE=true
+    """
                 
                 # Write to .env file
                 with open(".env", "w") as f:

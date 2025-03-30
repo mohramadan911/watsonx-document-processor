@@ -88,114 +88,135 @@ class WatsonxPDFAgent:
             process=Process.sequential
         )
     
-    def process_document(self, pdf_path, query=None):
-        """Process document with Dockling and WatsonX
+    # Modify your process_document method in the WatsonxPDFAgent class to save results
+
+    def process_document(self, pdf_path, query):
+        """Process a document with a query using Watsonx
         
         Args:
-            pdf_path (str): Path to the PDF file
-            query (str, optional): Specific query about the document
+            pdf_path (str): Path to the document
+            query (str): User query or command
             
         Returns:
-            str: Processing result (summary or answer to query)
+            str: Response text
         """
         try:
-            # Update the PDF search tool if needed
-            if pdf_path and not self.pdf_search_tool:
-                self.pdf_search_tool = DocklingPDFTool(pdf_path, self.model)
-            elif pdf_path and self.pdf_search_tool and self.pdf_search_tool.pdf_path != pdf_path:
-                self.pdf_search_tool = DocklingPDFTool(pdf_path, self.model)
+            # Special command handling - needs to happen before sending to search
             
-            if not self.pdf_search_tool:
-                return "No PDF document available for processing."
+            # Email command format: "send email to: example@example.com"
+            if "send email to:" in query.lower():
+                # Extract the email address
+                email_parts = query.lower().split("send email to:", 1)
+                if len(email_parts) > 1:
+                    email_address = email_parts[1].strip()
+                    
+                    # Validate it's a proper email address (simple check)
+                    if "@" in email_address and "." in email_address:
+                        logger.info(f"Sending email to: {email_address}")
+                        
+                        if self.ms_graph_client:
+                            # Use our enhanced email function
+                            result = self.send_document_email(pdf_path, email_address)
+                            
+                            if result.get("success", False):
+                                included_items = []
+                                if result.get("included_summary", False):
+                                    included_items.append("summary")
+                                if result.get("included_recommendations", False):
+                                    included_items.append("recommendations")
+                                if result.get("included_classification", False):
+                                    included_items.append("classification")
+                                
+                                if included_items:
+                                    included_text = ", ".join(included_items)
+                                    return f"✅ Email sent successfully to {email_address} including the document and {included_text}."
+                                else:
+                                    return f"✅ Email sent successfully to {email_address} with just the document attached."
+                            else:
+                                error_msg = result.get('error', 'Unknown error')
+                                logger.error(f"Email sending failed: {error_msg}")
+                                return f"❌ Failed to send email: {error_msg}"
+                        else:
+                            return "❌ Microsoft Graph client not configured. Please set up Microsoft Graph API in the Configuration tab."
+                    else:
+                        return f"❌ Invalid email address format: {email_address}"
             
-            # If there's a specific query, handle different query types
-            if query and query.strip():
-                # Check for email sending command
-                if "send email" in query.lower() or "email" in query.lower():
-                    return self.handle_email_request(query, pdf_path)
-                
-                # Check for reminder setting
-                elif "remind" in query.lower() or "reminder" in query.lower() or "schedule" in query.lower():
-                    return self.handle_reminder_request(query, pdf_path)
-                
-                # Check for recommendations request
-                elif any(word in query.lower() for word in ["recommend", "next steps", "what should i do", "action"]):
-                    search_results = self.pdf_search_tool.search("main points key findings recommendations")
-                    
-                    augmented_prompt = f"""
-                    The user wants recommendations or next steps based on this document.
-                    
-                    Here is content from the uploaded PDF document:
-                    {search_results}
-                    
-                    Please provide 3-5 specific, practical recommendations or next actions based on this document. For each recommendation:
-                    1. Describe the specific action
-                    2. Explain why it's important
-                    3. Suggest a timeline if applicable
-                    
-                    Include both document-specific actions (like follow-ups on content) and general actions (like sharing with colleagues or setting a review date).
-                    """
-                    
-                    return self.model.generate_text(augmented_prompt)
-                
-                # Standard summarization request
-                elif "summarize" in query.lower() and any(word in query.lower() for word in ["pdf", "document", "file", "the"]):
-                    search_results = self.pdf_search_tool.search("main topics key points overview executive summary")
-                    
-                    augmented_prompt = f"""
-                    The user wants a summary of the PDF document.
-                    
-                    Here is content from the uploaded PDF document:
-                    {search_results}
-                    
-                    Please provide a comprehensive summary of this document covering the main points.
-                    """
-                else:
-                    # General question about the document
-                    search_results = self.pdf_search_tool.search(query)
-                    
-                    augmented_prompt = f"""
-                    The user's question is: {query}
-                    
-                    Based on the uploaded PDF document, here is relevant information:
-                    {search_results}
-                    
-                    Using the above context from the PDF, please answer the user's question accurately.
-                    """
-                
-                return self.model.generate_text(augmented_prompt)
-            else:
-                # For full document processing, use Dockling directly
-                search_results = self.pdf_search_tool.search("main topics key points overview executive summary")
-                
-                augmented_prompt = f"""
-                You are a professional document analyst. 
-                The user has uploaded a PDF document and wants a comprehensive summary with recommendations.
-                
-                Here is relevant content from the document:
-                {search_results}
-                
-                Please provide a detailed, well-structured response with the following sections:
-                
-                ## Summary
-                Provide a detailed summary covering:
-                - The main purpose of the document
-                - Key points and findings
-                - Important details and insights
-                
-                ## Recommendations
-                Based on the document content, provide 3-5 practical recommendations or next steps, such as:
-                - Specific actions to take based on the document content
-                - Suggestions for sharing this document with relevant parties
-                - Recommended follow-up activities
-                - Timeline for reviewing this information again
-                
-                Be specific and actionable in your recommendations.
+            # Reminder command format: "remind me in X days/weeks"
+            elif "remind me in" in query.lower():
+                # Process reminder logic...
+                pass
+            
+            # Check for summarization request
+            elif "summarize" in query.lower() or "summary" in query.lower():
+                summary_prompt = f"""
+                Please provide a comprehensive summary of the document. Cover key points, main findings, 
+                and any important details that would be relevant to someone who hasn't read the document.
                 """
                 
-                return self.model.generate_text(augmented_prompt)
+                # Search the document and generate the summary
+                content = self.pdf_search_tool.search("document summary key points main topics")
+                prompt = f"""
+                Based on the following document content, please provide a comprehensive summary:
+                
+                {content}
+                
+                {summary_prompt}
+                """
+                
+                response = self.model.generate_text(prompt)
+                
+                # Save the summary in session state for potential email use
+                import streamlit as st
+                st.session_state.document_summary = response
+                
+                return response
+            
+            # Check for recommendations request
+            elif "recommend" in query.lower() or "recommendation" in query.lower() or "next steps" in query.lower():
+                recommendation_prompt = f"""
+                Based on this document, what recommendations would you make? What are the next steps 
+                or actions that should be taken? Please provide specific and actionable recommendations.
+                """
+                
+                # Search the document and generate recommendations
+                content = self.pdf_search_tool.search("key findings recommendations next steps actions")
+                prompt = f"""
+                Based on the following document content, please provide recommendations and next steps:
+                
+                {content}
+                
+                {recommendation_prompt}
+                """
+                
+                response = self.model.generate_text(prompt)
+                
+                # Save the recommendations in session state for potential email use
+                import streamlit as st
+                st.session_state.document_recommendations = response
+                
+                return response
+                
+            # For regular queries, use the PDF search tool
+            if self.pdf_search_tool:
+                content = self.pdf_search_tool.search(query)
+                
+                prompt = f"""
+                Based on the following document content, please answer the query:
+                
+                Document content:
+                {content}
+                
+                Query: {query}
+                
+                Please provide a detailed and accurate response.
+                """
+                
+                return self.model.generate_text(prompt)
+            else:
+                return "Error: PDF search tool not initialized. Please try uploading the document again."
+                
         except Exception as e:
-            logger.error(f"Error processing document: {str(e)}")
+            logger.error(f"Error in process_document: {str(e)}")
             return f"Error processing document: {str(e)}"
     
     def handle_email_request(self, query, pdf_path):
@@ -385,4 +406,92 @@ class WatsonxPDFAgent:
                 "author": "Unknown",
                 "date": "Unknown",
                 "pages": 0
+            }
+    # Add this method to your WatsonxPDFAgent class in pdf_agent.py
+
+    def send_document_email(self, pdf_path, to_email):
+        """Send an email with document analysis based on available information
+        
+        Args:
+            pdf_path (str): Path to the PDF file
+            to_email (str): Recipient email address
+            
+        Returns:
+            dict: Result of the email sending operation
+        """
+        import streamlit as st
+        
+        if not self.ms_graph_client:
+            return {
+                "success": False, 
+                "error": "Microsoft Graph client not configured"
+            }
+        
+        try:
+            # Get document name
+            document_name = os.path.basename(pdf_path)
+            
+            # Check if we have a summary for this document in session state
+            summary = None
+            recommendations = None
+            classification = None
+            
+            # Look for summary in session state or generate one
+            if hasattr(st.session_state, 'document_summary') and st.session_state.document_summary:
+                logger.info("Using existing document summary from session state")
+                summary = st.session_state.document_summary
+            else:
+                # Generate a quick summary on the fly
+                logger.info("Generating new document summary")
+                content = self.pdf_search_tool.search("key points main topics executive summary")
+                summary_prompt = f"""
+                Based on the following document content, please provide a brief executive summary (3-5 key points):
+                
+                {content}
+                """
+                summary = self.model.generate_text(summary_prompt)
+                st.session_state.document_summary = summary
+            
+            # Look for recommendations in session state
+            if hasattr(st.session_state, 'document_recommendations') and st.session_state.document_recommendations:
+                logger.info("Using existing document recommendations from session state")
+                recommendations = st.session_state.document_recommendations
+            
+            # Look for classification in session state
+            if hasattr(st.session_state, 'document_classification') and st.session_state.document_classification:
+                logger.info("Using existing document classification from session state")
+                classification = st.session_state.document_classification
+            
+            # Send the email with all available information
+            logger.info(f"Sending email to {to_email} with document: {document_name}")
+            result = self.ms_graph_client.create_email_with_summary(
+                to_email=to_email,
+                document_name=document_name,
+                summary=summary,
+                pdf_path=pdf_path,
+                recommendations=recommendations,
+                classification=classification
+            )
+            
+            if result:
+                logger.info(f"Email sent successfully to {to_email}")
+                return {
+                    "success": True,
+                    "message": f"Email sent successfully to {to_email}",
+                    "document": document_name,
+                    "included_summary": summary is not None,
+                    "included_recommendations": recommendations is not None,
+                    "included_classification": classification is not None
+                }
+            else:
+                logger.error(f"Failed to send email to {to_email}")
+                return {
+                    "success": False,
+                    "error": "Failed to send email"
+                }
+        except Exception as e:
+            logger.error(f"Error in send_document_email: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
             }
