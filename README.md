@@ -1,6 +1,6 @@
 # Autonomous Document Processing System
 
-[This readme has been written by cursor conected to Sonnet3.7]
+
 
 A fully autonomous document processing system powered by IBM watsonx.ai and CrewAI. This solution automatically monitors document repositories, intelligently classifies documents based on content, organizes them into appropriate folders, and triggers relevant workflows—all with zero human intervention.
 
@@ -118,3 +118,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ---
 
 Built with ❤️ by [PandasTeam]
+
+[This readme has been written by cursor conected to Sonnet3.7]
+
+
+
