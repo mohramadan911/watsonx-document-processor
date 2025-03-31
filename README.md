@@ -97,6 +97,13 @@ The system offers two modes:
 - `dockling_tool.py`: PDF document extraction and search tool
 - `document_classifier.py`: Document classification system
 
+## 📁 What comes next and what are we looking for :
+- We nned to utilize IBM WatsonX orachastrate for connecting the solution componenents
+- We need to enhance the crewai flow and use kick() instead of start()
+- We need to test the solution with different data/object storage
+- We need to utilize workflow engines
+- We need better API impleentation 
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
